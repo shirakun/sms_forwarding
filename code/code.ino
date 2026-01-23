@@ -60,6 +60,7 @@ struct Config {
   PushChannel pushChannels[MAX_PUSH_CHANNELS];  // 多推送通道
   String webUser;      // Web管理账号
   String webPass;      // Web管理密码
+  String deviceName;   // 设备名称
 };
 
 // 默认Web管理账号密码
@@ -119,6 +120,7 @@ void saveConfig() {
   preferences.putString("adminPhone", config.adminPhone);
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
+  preferences.putString("deviceName", config.deviceName);
   
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -147,6 +149,7 @@ void loadConfig() {
   config.adminPhone = preferences.getString("adminPhone", "");
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
+  config.deviceName = preferences.getString("deviceName", "SMS转发器");
   
   // 加载推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -280,6 +283,15 @@ const char* htmlPage = R"rawliteral(
         <div class="form-group">
           <label>管理密码</label>
           <input type="password" name="webPass" value="%WEB_PASS%" placeholder="请设置复杂密码">
+        </div>
+      </div>
+      
+      <div class="section">
+        <div class="section-title">⚙️ 基础设置</div>
+        <div class="form-group">
+          <label>设备名称</label>
+          <input type="text" name="deviceName" value="%DEVICE_NAME%" placeholder="SMS转发器">
+          <div class="hint">该名称将显示在通知标题或正文中，方便区分多台设备</div>
         </div>
       </div>
       
@@ -725,6 +737,7 @@ void handleRoot() {
   html.replace("%IP%", WiFi.localIP().toString());
   html.replace("%WEB_USER%", config.webUser);
   html.replace("%WEB_PASS%", config.webPass);
+  html.replace("%DEVICE_NAME%", config.deviceName);
   html.replace("%SMTP_SERVER%", config.smtpServer);
   html.replace("%SMTP_PORT%", String(config.smtpPort));
   html.replace("%SMTP_USER%", config.smtpUser);
@@ -1512,6 +1525,9 @@ void handleSave() {
   
   config.webUser = newWebUser;
   config.webPass = newWebPass;
+  config.deviceName = server.arg("deviceName");
+  if (config.deviceName.length() == 0) config.deviceName = "SMS转发器";
+  
   config.smtpServer = server.arg("smtpServer");
   config.smtpPort = server.arg("smtpPort").toInt();
   if (config.smtpPort == 0) config.smtpPort = 465;
@@ -1564,8 +1580,8 @@ void handleSave() {
   // 如果配置有效，发送启动通知
   if (configValid) {
     Serial.println("配置有效，发送启动通知...");
-    String subject = "短信转发器配置已更新";
-    String body = "设备配置已更新\n设备地址: " + getDeviceUrl();
+    String subject = "[" + config.deviceName + "] 配置已更新";
+    String body = "设备 [" + config.deviceName + "] 配置已更新\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
   }
 }
@@ -1753,7 +1769,7 @@ void processAdminCommand(const char* sender, const char* text) {
       bool success = sendSMS(targetPhone.c_str(), smsContent.c_str());
       
       // 发送邮件通知结果
-      String subject = success ? "短信发送成功" : "短信发送失败";
+      String subject = "[" + config.deviceName + "] " + (success ? "短信发送成功" : "短信发送失败");
       String body = "管理员命令执行结果:\n";
       body += "命令: " + cmd + "\n";
       body += "目标号码: " + targetPhone + "\n";
@@ -1763,7 +1779,8 @@ void processAdminCommand(const char* sender, const char* text) {
       sendEmailNotification(subject.c_str(), body.c_str());
     } else {
       Serial.println("SMS命令格式错误");
-      sendEmailNotification("命令执行失败", "SMS命令格式错误，正确格式: SMS:号码:内容");
+      String subject = "[" + config.deviceName + "] 命令执行失败";
+      sendEmailNotification(subject.c_str(), "SMS命令格式错误，正确格式: SMS:号码:内容");
     }
   }
   // 处理 RESET 命令
@@ -1771,7 +1788,8 @@ void processAdminCommand(const char* sender, const char* text) {
     Serial.println("执行RESET命令");
     
     // 先发送邮件通知（因为重启后就发不了了）
-    sendEmailNotification("重启命令已执行", "收到RESET命令，即将重启模组和ESP32...");
+    String subject = "[" + config.deviceName + "] 重启命令已执行";
+    sendEmailNotification(subject.c_str(), "收到RESET命令，即将重启模组和ESP32...");
     
     // 重启模组
     resetModule();
@@ -1993,6 +2011,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
   String senderEscaped = jsonEscape(String(sender));
   String messageEscaped = jsonEscape(String(message));
   String timestampEscaped = jsonEscape(String(timestamp));
+  String deviceNameEscaped = jsonEscape(config.deviceName);
   
   switch (channel.type) {
     case PUSH_TYPE_POST_JSON: {
@@ -2002,7 +2021,8 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       String jsonData = "{";
       jsonData += "\"sender\":\"" + senderEscaped + "\",";
       jsonData += "\"message\":\"" + messageEscaped + "\",";
-      jsonData += "\"timestamp\":\"" + timestampEscaped + "\"";
+      jsonData += "\"timestamp\":\"" + timestampEscaped + "\",";
+      jsonData += "\"deviceName\":\"" + deviceNameEscaped + "\"";
       jsonData += "}";
       Serial.println("POST JSON: " + jsonData);
       httpCode = http.POST(jsonData);
@@ -2014,7 +2034,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.begin(channel.url);
       http.addHeader("Content-Type", "application/json");
       String jsonData = "{";
-      jsonData += "\"title\":\"" + senderEscaped + "\",";
+      jsonData += "\"title\":\"[" + deviceNameEscaped + "] " + senderEscaped + "\",";
       jsonData += "\"body\":\"" + messageEscaped + "\"";
       jsonData += "}";
       Serial.println("BARK JSON: " + jsonData);
@@ -2033,6 +2053,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       getUrl += "sender=" + urlEncode(String(sender));
       getUrl += "&message=" + urlEncode(String(message));
       getUrl += "&timestamp=" + urlEncode(String(timestamp));
+      getUrl += "&deviceName=" + urlEncode(config.deviceName);
       Serial.println("GET URL: " + getUrl);
       http.begin(getUrl);
       httpCode = http.GET();
@@ -2062,7 +2083,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.begin(webhookUrl);
       http.addHeader("Content-Type", "application/json");
       String jsonData = "{\"msgtype\":\"text\",\"text\":{\"content\":\"";
-      jsonData += "📱短信通知\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
+      jsonData += "📱短信通知 (" + deviceNameEscaped + ")\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
       jsonData += "\"}}";
       Serial.println("钉钉: " + jsonData);
       httpCode = http.POST(jsonData);
@@ -2076,8 +2097,8 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.addHeader("Content-Type", "application/json");
       String jsonData = "{";
       jsonData += "\"token\":\"" + channel.key1 + "\",";
-      jsonData += "\"title\":\"短信来自: " + senderEscaped + "\",";
-      jsonData += "\"content\":\"<b>发送者:</b> " + senderEscaped + "<br><b>时间:</b> " + timestampEscaped + "<br><b>内容:</b><br>" + messageEscaped + "\"";
+      jsonData += "\"title\":\"[" + deviceNameEscaped + "] 短信来自: " + senderEscaped + "\",";
+      jsonData += "\"content\":\"<b>设备:</b> " + deviceNameEscaped + "<br><b>发送者:</b> " + senderEscaped + "<br><b>时间:</b> " + timestampEscaped + "<br><b>内容:</b><br>" + messageEscaped + "\"";
       jsonData += "}";
       Serial.println("PushPlus: " + jsonData);
       httpCode = http.POST(jsonData);
@@ -2089,8 +2110,8 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       String scUrl = channel.url.length() > 0 ? channel.url : ("https://sctapi.ftqq.com/" + channel.key1 + ".send");
       http.begin(scUrl);
       http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-      String postData = "title=" + urlEncode("短信来自: " + String(sender));
-      postData += "&desp=" + urlEncode("**发送者:** " + String(sender) + "\n\n**时间:** " + String(timestamp) + "\n\n**内容:**\n\n" + String(message));
+      String postData = "title=" + urlEncode("[" + config.deviceName + "] 短信来自: " + String(sender));
+      postData += "&desp=" + urlEncode("**设备:** " + config.deviceName + "\n\n**发送者:** " + String(sender) + "\n\n**时间:** " + String(timestamp) + "\n\n**内容:**\n\n" + String(message));
       Serial.println("Server酱: " + postData);
       httpCode = http.POST(postData);
       break;
@@ -2108,6 +2129,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       body.replace("{sender}", senderEscaped);
       body.replace("{message}", messageEscaped);
       body.replace("{timestamp}", timestampEscaped);
+      body.replace("{deviceName}", deviceNameEscaped);
       Serial.println("自定义: " + body);
       httpCode = http.POST(body);
       break;
@@ -2141,7 +2163,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       // 飞书消息体
       jsonData += "\"msg_type\":\"text\",";
       jsonData += "\"content\":{\"text\":\"";
-      jsonData += "📱短信通知\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
+      jsonData += "📱短信通知 (" + deviceNameEscaped + ")\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
       jsonData += "\"}}";
       
       http.begin(webhookUrl);
@@ -2161,8 +2183,8 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.begin(gotifyUrl);
       http.addHeader("Content-Type", "application/json");
       String jsonData = "{";
-      jsonData += "\"title\":\"短信来自: " + senderEscaped + "\",";
-      jsonData += "\"message\":\"" + messageEscaped + "\\n\\n时间: " + timestampEscaped + "\",";
+      jsonData += "\"title\":\"[" + deviceNameEscaped + "] 短信来自: " + senderEscaped + "\",";
+      jsonData += "\"message\":\"" + messageEscaped + "\\n\\n时间: " + timestampEscaped + "\\n设备: " + deviceNameEscaped + "\",";
       jsonData += "\"priority\":5";
       jsonData += "}";
       Serial.println("Gotify: " + jsonData);
@@ -2182,7 +2204,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       
       String jsonData = "{";
       jsonData += "\"chat_id\":\"" + channel.key1 + "\",";
-      String text = "📱短信通知\n发送者: " + senderEscaped + "\n内容: " + messageEscaped + "\n时间: " + timestampEscaped;
+      String text = "📱短信通知 (" + deviceNameEscaped + ")\n发送者: " + senderEscaped + "\n内容: " + messageEscaped + "\n时间: " + timestampEscaped;
       jsonData += "\"text\":\"" + text + "\"";
       jsonData += "}";
       
@@ -2297,8 +2319,8 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
   // 发送通知http（推送到所有启用的通道）
   sendSMSToServer(sender, text, timestamp);
   // 发送通知邮件
-  String subject = ""; subject+="短信";subject+=sender;subject+=",";subject+=text;
-  String body = ""; body+="来自：";body+=sender;body+="，时间：";body+=timestamp;body+="，内容：";body+=text;
+  String subject = "[" + config.deviceName + "] 短信" + sender + "," + text;
+  String body = "设备：" + config.deviceName + "，来自：" + sender + "，时间：" + timestamp + "，内容：" + text;
   sendEmailNotification(subject.c_str(), body.c_str());
 }
 
